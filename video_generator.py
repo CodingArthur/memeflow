@@ -1,5 +1,6 @@
 import os
 import tempfile
+import asyncio
 from creativity import get_text
 from script import get_script
 from movie import process_jsonl_story
@@ -28,7 +29,7 @@ def generate_video_from_input(input_text):
             
             # 步骤3: 生成视频
             print("步骤3: 生成视频...")
-            success = process_jsonl_story(script_file)
+            success = asyncio.run(process_jsonl_story(script_file))
             
             if success:
                 print(f"视频生成成功！")

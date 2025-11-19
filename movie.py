@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 import numpy as np
 from moviepy.editor import *
 from PIL import Image, ImageDraw, ImageFont
@@ -502,9 +503,44 @@ def cleanup_intermediate_files(scene_numbers):
     
     print(f"清理完成，共删除 {len(files_to_delete)} 个中间文件")
 
-def process_jsonl_story(jsonl_file):
-    """处理JSONL文件并生成视频"""
-    
+def _process_scene(scene, default_index):
+    """同步处理单个场景的逻辑，供异步任务调用"""
+    scene_number = scene.get("scene_number", default_index + 1)
+    place = scene.get("backgrounds", "home")
+    text = scene.get("text", "") or scene.get("label", "")
+    emo = scene.get("meme", "其他")
+    duration = scene.get("duration", 3)
+
+    print(f"\n处理场景 {scene_number}: {place} - {emo} - {duration}秒")
+
+    processed_text = AddNewline(text)
+    print(f"文本内容: {processed_text}")
+
+    try:
+        memes = scene.get("memes")
+        if isinstance(memes, list) and memes:
+            d2 = compute_scene_duration(memes, duration)
+            label_text = AddNewline(text)
+            compose_multi_memes(place, scene_number, label_text, memes, d2)
+            return scene_number, f"out{scene_number}.mp4"
+        else:
+            BgVideo(processed_text, place, scene_number, duration)
+            if not AddMeme(emo, scene_number, duration):
+                return scene_number, None
+            audio_file = f"meme_audio/{emo}.mp3"
+            video_file = f"{output_folder}/{scene_number}.mp4"
+            output_video_file = f"{output_folder}/out{scene_number}.mp4"
+            add_audio_to_video(video_file, audio_file, output_video_file)
+            return scene_number, f"out{scene_number}.mp4"
+    except Exception as e:
+        print(f"场景 {scene_number} 处理失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return scene_number, None
+
+async def process_jsonl_story(jsonl_file):
+    """处理JSONL文件并生成视频（异步版本）"""
+
     story = []
     with open(jsonl_file, 'r', encoding='utf-8') as f:
         for line in f:
@@ -514,46 +550,27 @@ def process_jsonl_story(jsonl_file):
                     story.append(scene_data)
                 except json.JSONDecodeError as e:
                     print(f"JSON解析错误: {e}，跳过该行: {line}")
-    
+
     print(f"成功读取 {len(story)} 个场景")
-    
+
+    async def run_scene(scene, idx):
+        return await asyncio.to_thread(_process_scene, scene, idx)
+
+    tasks = [asyncio.create_task(run_scene(scene, i)) for i, scene in enumerate(story)]
+    results = await asyncio.gather(*tasks) if tasks else []
+
     video_names = []
     scene_numbers = []
-    
-    for i, scene in enumerate(story):
-        scene_number = scene.get("scene_number", i + 1)
-        place = scene.get("backgrounds", "home")
-        text = scene.get("text", "") or scene.get("label", "")
-        emo = scene.get("meme", "其他")
-        duration = scene.get("duration", 3)
-        
-        print(f"\n处理场景 {scene_number}: {place} - {emo} - {duration}秒")
-        
+    for scene_number, video_name in results:
         scene_numbers.append(scene_number)
-        processed_text = AddNewline(text)
-        print(f"文本内容: {processed_text}")
-        
-        memes = scene.get("memes")
-        if isinstance(memes, list) and memes:
-            d2 = compute_scene_duration(memes, duration)
-            label_text = AddNewline(text)
-            compose_multi_memes(place, scene_number, label_text, memes, d2)
-            video_names.append(f"out{scene_number}.mp4")
-        else:
-            BgVideo(processed_text, place, scene_number, duration)
-            if not AddMeme(emo, scene_number, duration):
-                continue
-            audio_file = f"meme_audio/{emo}.mp3"
-            video_file = f"{output_folder}/{scene_number}.mp4"
-            output_video_file = f"{output_folder}/out{scene_number}.mp4"
-            add_audio_to_video(video_file, audio_file, output_video_file)
-            video_names.append(f"out{scene_number}.mp4")
-    
+        if video_name:
+            video_names.append(video_name)
+
     if video_names:
         folder_path = f"results"
         output_file = f"results/Final_Story.mp4"
-        concatenate_videos(folder_path, video_names, output_file)
-        cleanup_intermediate_files(scene_numbers)
+        await asyncio.to_thread(concatenate_videos, folder_path, video_names, output_file)
+        await asyncio.to_thread(cleanup_intermediate_files, scene_numbers)
         print("\n视频生成完成！最终视频: Final_Story.mp4")
         return True
     else:
@@ -562,5 +579,5 @@ def process_jsonl_story(jsonl_file):
 
 # 使用示例
 if __name__ == "__main__":
-    jsonl_file = "script_checked.jsonl" 
-    process_jsonl_story(jsonl_file)
+    jsonl_file = "script_checked.jsonl"
+    asyncio.run(process_jsonl_story(jsonl_file))
